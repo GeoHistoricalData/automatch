@@ -3,53 +3,61 @@ import cv2
 from osgeo import gdal
 from osgeo import osr
 
-def georef(inputFile, referenceFile, outputFile, ratio = 0.75):
-    """Georeference the input using the training image and save the result in outputFile. 
-    A ratio can be given to select more or less matches (defaults to 0.75)."""
-    img1 = cv2.imread(referenceFile,0) # queryImage (IMREAD_COLOR flag=0 to force grayscale)
-    img2 = cv2.imread(inputFile,0) # trainImage (IMREAD_COLOR flag=0 to force grayscale)
-
+def getKeyPointsAndDescriptors(img):
+    """Detect keypoints and compute descriptors. Later, we might something else than SIFT."""
     # Initiate SIFT detector
     sift = cv2.xfeatures2d.SIFT_create()
-    # sift = cv2.xfeatures2d.SURF_create()
-    # sift = cv2.KAZE_create()
-    # sift = cv2.AKAZE_create()# NOPE
-    # sift = cv2.ORB_create()#NOPE
-    # sift = cv2.BRISK_create()#NOPE
-
     # find the keypoints and descriptors with SIFT
-    print ("sift on image 1")
-    kp1, des1 = sift.detectAndCompute(img1,None)
-    # # find the keypoints with ORB
-    # kp1 = sift.detect(img1,None)
-    # # compute the descriptors with ORB
-    # kp1, des1 = sift.compute(img1, kp1)
-    print ("sift on image 2")
-    kp2, des2 = sift.detectAndCompute(img2,None)
-    # # find the keypoints with ORB
-    # kp2 = sift.detect(img2,None)
-    # # compute the descriptors with ORB
-    # kp2, des2 = sift.compute(img2, kp2)
+    print ("detect keypoints on image")
+    return sift.detectAndCompute(img,None);
 
+def getMatches(des1, des2, ratio):
     # FLANN parameters
     FLANN_INDEX_KDTREE = 0
     index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-    search_params = dict(checks=100)   # or pass empty dictionary
-
+    search_params = dict(checks = 100)   # or pass empty dictionary
     print ("FlannBasedMatcher start")
-    flann = cv2.FlannBasedMatcher(index_params,search_params)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
     print ("FlannBasedMatcher Knn Match")
-    matches = flann.knnMatch(des1,des2,k=2)
-
+    matches = flann.knnMatch(des1, des2, k=2)
     # Apply ratio test
     good = []
     for m,n in matches:
         if m.distance < ratio*n.distance:
             good.append(m)
+    return good
 
-    sortedMatches = sorted(good, key=lambda x:x.distance)
-    for m in sortedMatches:
-        print(str(m.distance) + ' => ' + str(m.queryIdx) + ' ' + str(m.trainIdx))
+def getBinImage(image):
+    blur = cv2.GaussianBlur(image,(5,5),0)
+    th,img = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    return img
+    
+    
+def georef(inputFile, referenceFile, outputFile, ratio = 0.75):
+    """Georeference the input using the training image and save the result in outputFile. 
+    A ratio can be given to select more or less matches (defaults to 0.75)."""
+    im1 = cv2.imread(referenceFile,0) # queryImage (IMREAD_COLOR flag=0 to force grayscale)
+    im2 = cv2.imread(inputFile,0) # trainImage (IMREAD_COLOR flag=0 to force grayscale)
+    # Otsu's thresholding
+    # th1,img1 = cv2.threshold(im1,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    # th2,img2 = cv2.threshold(im2,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    # Otsu's thresholding after Gaussian filtering
+    # blur = cv.GaussianBlur(img,(5,5),0)
+    # ret3,th3 = cv2.threshold(blur,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU)
+
+    img1 = getBinImage(im1)
+    img2 = getBinImage(im2)
+    
+    kp1, des1 = getKeyPointsAndDescriptors(img1)
+    kp2, des2 = getKeyPointsAndDescriptors(img2)
+
+    good1 = getMatches(des1, des2, ratio)
+    good2 = getMatches(des2, des1, ratio)
+    good = [m for m in good1 if any(mm.queryIdx == m.trainIdx and mm.trainIdx == m.queryIdx for mm in good2)]
+
+    # sortedMatches = sorted(good, key=lambda x:x.distance)
+    # for m in sortedMatches:
+    #     print(str(m.distance) + ' => ' + str(m.queryIdx) + ' ' + str(m.trainIdx))
 
     MIN_MATCH_COUNT = 3
 
