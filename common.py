@@ -101,7 +101,7 @@ def georef(inputFile, referenceFile, outputFile, ratio = 0.75):
 
         src_ds = gdal.Open(inputFile)
         dst_ds = gdal.Translate('', src_ds, outputSRS = ds.GetProjection(), GCPs = gcp_list, format='VRT')
-        dst_ds = gdal.Warp(outputFile, dst_ds, tps = False, polynomialOrder = 1, errorThreshold = 1)
+        dst_ds = gdal.Warp(outputFile, dst_ds, tps = False, polynomialOrder = 1, dstNodata = 1)
         dst_ds = None
 
         draw_params = dict(matchColor = (0,255,0), # draw matches in green color
