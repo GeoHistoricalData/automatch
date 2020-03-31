@@ -1,16 +1,60 @@
 import numpy as np
 import cv2
+import math
+import pandas as pd
 from osgeo import gdal
 from osgeo import osr
 from osgeo import ogr
 
-def getKeyPointsAndDescriptors(img):
+def getKeyPointsAndDescriptors(img, tile, offset, nFeatures=0):
     """Detect keypoints and compute descriptors. Later, we might something else than SIFT."""
-    # Initiate SIFT detector
-    sift = cv2.xfeatures2d.SIFT_create()
-    # find the keypoints and descriptors with SIFT
-    print ("detect keypoints on image")
-    return sift.detectAndCompute(img,None);
+    if (tile is not None and offset is not None):
+        img_shape = img.shape
+        nbTilesY = int(math.ceil(img_shape[0]/(offset[1] * 1.0)))
+        nbTilesX = int(math.ceil(img_shape[1]/(offset[0] * 1.0)))
+        #frames = []
+        array = []
+        for i in range(nbTilesY):
+            print(i,"/",nbTilesY)
+            for j in range(nbTilesX):
+                xmin = offset[0]*j
+                ymin = offset[1]*i
+                cropped_img = img[ymin:min(offset[1]*i+tile[1], img_shape[0]), xmin:min(offset[0]*j+tile[0], img_shape[1])]
+                sift = cv2.xfeatures2d.SIFT_create()
+                kp, des = sift.detectAndCompute(cropped_img,None)
+                if len(kp) > 0:
+                    #print('kp',kp)
+                    #print('des',des)
+                    #for z in zip(kp, des):
+                    #    print(z)
+                    #arrays.append(zip(kp, des))
+                    for z in zip(kp, des):
+                        pt = z[0].pt
+                        z[0].pt = (pt[0]+xmin,pt[1]+ymin)
+                        array.append(z)
+                    #                    df = pd.DataFrame({'keypoints':kp,'descriptors':des})
+                    #                    frames.append(df)
+        print(len(array))
+        #array = np.concatenate(arrays)
+        array.sort(key=lambda t: t[0].response, reverse=True)
+        #df = pd.concat(frames)
+        #df.assign(f = df['keypoints'].response).sort_values('f', ascending=False).drop('f', axis=1)
+        sortedarray = array
+        if nFeatures>0:
+            sortedarray = array[:nFeatures]
+            #df.truncate(after=nFeatures)
+        #return df['keypoints'], df['descriptors']
+        print(sortedarray[0][0])
+        print(sortedarray[0][0].pt)
+        print(sortedarray[0][1])
+        return [ e[0] for e in sortedarray ], [ e[1] for e in sortedarray ]
+    else:
+        # Initiate SIFT detector
+        sift = cv2.xfeatures2d.SIFT_create(nFeatures)
+        # find the keypoints and descriptors with SIFT
+        print ("detect keypoints on image")
+        #cv2.imwrite('tmp.png',img) 
+        return sift.detectAndCompute(img,None)
 
 def getMatches(des1, des2, ratio):
     # FLANN parameters
@@ -20,7 +64,7 @@ def getMatches(des1, des2, ratio):
     print ("FlannBasedMatcher start")
     flann = cv2.FlannBasedMatcher(index_params, search_params)
     print ("FlannBasedMatcher Knn Match")
-    matches = flann.knnMatch(des1, des2, k=2)
+    matches = flann.knnMatch(np.asarray(des1,np.float32), np.asarray(des2,np.float32), k=2)
     # Apply ratio test
     good = []
     for m,n in matches:
@@ -51,17 +95,23 @@ def saveGCPs(gcps, srs, outputFile):
         out_lyr.CreateFeature(f)
 
     
-def georef(inputFile, referenceFile, outputFile, gcpOutputFile, ratio = 0.75):
+def georef(inputFile, referenceFile, outputFile, gcpOutputFile, tile, offset, ratio = 0.75, convertToBinary = False):
     """Georeference the input using the training image and save the result in outputFile. 
     A ratio can be given to select more or less matches (defaults to 0.75)."""
-    im1 = cv2.imread(referenceFile,0) # queryImage (IMREAD_COLOR flag=0 to force grayscale)
-    im2 = cv2.imread(inputFile,0) # trainImage (IMREAD_COLOR flag=0 to force grayscale)
+    im1 = cv2.imread(referenceFile, cv2.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
+    im2 = cv2.imread(inputFile, cv2.IMREAD_GRAYSCALE) # trainImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
 
-    img1 = getBinImage(im1)
-    img2 = getBinImage(im2)
+    img1 = im1
+    if convertToBinary:
+        img1 = getBinImage(im1)
+    img2 = im2
+    if convertToBinary:
+        img2 = getBinImage(im2)
     
-    kp1, des1 = getKeyPointsAndDescriptors(img1)
-    kp2, des2 = getKeyPointsAndDescriptors(img2)
+    kp1, des1 = getKeyPointsAndDescriptors(img1, tile, offset, 100000)
+    print("points in img1",len(des1))
+    kp2, des2 = getKeyPointsAndDescriptors(img2, tile, offset, 100000)
+    print("points in img2",len(des2))
 
     # Match both ways
     good1 = getMatches(des1, des2, ratio)
@@ -73,6 +123,7 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputFile, ratio = 0.75):
     # for m in sortedMatches:
     #     print(str(m.distance) + ' => ' + str(m.queryIdx) + ' ' + str(m.trainIdx))
 
+    print("matches",len(good))
     MIN_MATCH_COUNT = 3
 
     if len(good)>MIN_MATCH_COUNT:
@@ -89,7 +140,7 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputFile, ratio = 0.75):
         geo_t = ds.GetGeoTransform ()
         # gcp_string = ''
         print(str(len(matchesMask)) + " matches")
-        for i,goodmatch in enumerate(matchesMask):
+        for i, goodmatch in enumerate(matchesMask):
             if goodmatch == 1:
                 p1 = kp1[good[i].queryIdx].pt
                 p2 = kp2[good[i].trainIdx].pt
