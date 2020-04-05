@@ -37,10 +37,12 @@ def automatch(inputfile, referencefile, outputfile, gcps, show, tileX=None, tile
       tile = (tileX, tileY)
       offset = (offsetX, offsetY)
 
-   points = None
+   pointsShp = None
+   pointsTxt = None
    if gcps:
-      points = outputfile+'.shp'
-   img = georef(inputfile, referencefile, outputfile, points, tile, offset, ratio, binary)
+      pointsShp = outputfile+'.shp'
+      pointsTxt = outputfile+'.points'
+   img = georef(inputfile, referencefile, outputfile, pointsShp, pointsTxt, tile, offset, ratio, binary)
    if show and img is not None:
        plt.imshow(img, 'gray'),plt.show()
 

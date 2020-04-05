@@ -1,7 +1,6 @@
-import numpy as np
 import cv2
+import numpy as np
 import math
-import pandas as pd
 from osgeo import gdal
 from osgeo import osr
 from osgeo import ogr
@@ -14,7 +13,6 @@ def getKeyPointsAndDescriptors(img, tile, offset, nFeatures=0):
         img_shape = img.shape
         nbTilesY = int(math.ceil(img_shape[0]/(offset[1] * 1.0)))
         nbTilesX = int(math.ceil(img_shape[1]/(offset[0] * 1.0)))
-        #frames = []
         array = []
         for i in range(nbTilesY):
             logging.debug("%d/%d", i ,nbTilesY)
@@ -25,37 +23,25 @@ def getKeyPointsAndDescriptors(img, tile, offset, nFeatures=0):
                 sift = cv2.xfeatures2d.SIFT_create()
                 kp, des = sift.detectAndCompute(cropped_img,None)
                 if len(kp) > 0:
-                    #print('kp',kp)
-                    #print('des',des)
-                    #for z in zip(kp, des):
-                    #    print(z)
-                    #arrays.append(zip(kp, des))
                     for z in zip(kp, des):
                         pt = z[0].pt
                         z[0].pt = (pt[0]+xmin,pt[1]+ymin)
                         array.append(z)
-                    #                    df = pd.DataFrame({'keypoints':kp,'descriptors':des})
-                    #                    frames.append(df)
-        logging.debug(len(array))
-        #array = np.concatenate(arrays)
+        logging.debug("Found %d points", len(array))
         array.sort(key=lambda t: t[0].response, reverse=True)
-        #df = pd.concat(frames)
-        #df.assign(f = df['keypoints'].response).sort_values('f', ascending=False).drop('f', axis=1)
         sortedarray = array
         if nFeatures>0:
             sortedarray = array[:nFeatures]
-            #df.truncate(after=nFeatures)
-        #return df['keypoints'], df['descriptors']
-        logging.debug(sortedarray[0][0])
-        logging.debug(sortedarray[0][0].pt)
-        logging.debug(sortedarray[0][1])
+        if len(array) > 0:
+            logging.debug(sortedarray[0][0])
+            logging.debug(sortedarray[0][0].pt)
+            logging.debug(sortedarray[0][1])
         return [ e[0] for e in sortedarray ], [ e[1] for e in sortedarray ]
     else:
         # Initiate SIFT detector
         sift = cv2.xfeatures2d.SIFT_create(nFeatures)
         # find the keypoints and descriptors with SIFT
         logging.debug("detect keypoints on image")
-        #cv2.imwrite('tmp.png',img) 
         return sift.detectAndCompute(img,None)
 
 
@@ -83,7 +69,7 @@ def getBinImage(image):
     return img
 
 
-def saveGCPs(gcps, srs, outputFile):
+def saveGCPsAsShapefile(gcps, srs, outputFile):
     out_ds = ogr.GetDriverByName('ESRI Shapefile').CreateDataSource(outputFile)
     out_lyr = out_ds.CreateLayer('gcps', geom_type = ogr.wkbPoint, srs = srs)
     out_lyr.CreateField(ogr.FieldDefn('Id', ogr.OFTString))
@@ -99,12 +85,20 @@ def saveGCPs(gcps, srs, outputFile):
         f.SetGeometry(ogr.CreateGeometryFromWkt('POINT(%f %f)' % (gcps[i].GCPX, gcps[i].GCPY)))
         out_lyr.CreateFeature(f)
 
+def saveGCPsAsText(gcps, outputFile):
+    file = open(outputFile,"w+")
+    file.write("mapX,mapY,pixelX,pixelY,enable,dX,dY,residual\n")
+    for i in range(len(gcps)):
+        file.write("%f,%f,%f,%f,1,0,0,0\n" % (gcps[i].GCPX, gcps[i].GCPY, gcps[i].GCPPixel, -gcps[i].GCPLine))
+    file.close()
     
-def georef(inputFile, referenceFile, outputFile, gcpOutputFile, tile, offset, ratio = 0.75, convertToBinary = False):
+def georef(inputFile, referenceFile, outputFile, gcpOutputShp, gcpOutputTxt, tile, offset, ratio = 0.75, convertToBinary = False):
     """Georeference the input using the training image and save the result in outputFile. 
     A ratio can be given to select more or less matches (defaults to 0.75)."""
     train = cv2.imread(referenceFile, cv2.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
+    logging.info(train)
     query = cv2.imread(inputFile, cv2.IMREAD_GRAYSCALE) # trainImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
+    logging.info(query)
 
     if convertToBinary:
         train = getBinImage(train)
@@ -123,10 +117,6 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputFile, tile, offset, ra
     # Only keep matches that are present in both ways
     two_sides_matches = [m for m in matches_train if any(mm.queryIdx == m.trainIdx and mm.trainIdx == m.queryIdx for mm in matches_query)]
 
-    # sortedMatches = sorted(good, key=lambda x:x.distance)
-    # for m in sortedMatches:
-    #     print(str(m.distance) + ' => ' + str(m.queryIdx) + ' ' + str(m.trainIdx))
-
     logging.debug("Matches %d",len(two_sides_matches))
     MIN_MATCH_COUNT = 3
 
@@ -139,6 +129,7 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputFile, tile, offset, ra
 
         ds = gdal.Open(referenceFile) 
         xoffset, px_w, rot1, yoffset, px_h, rot2 = ds.GetGeoTransform()
+        logging.debug("Transform: %f, %f, %f, %f, %f, %f", xoffset, px_w, rot1, yoffset, px_h, rot2)
 
         gcp_list = []
         geo_t = ds.GetGeoTransform ()
@@ -149,9 +140,11 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputFile, tile, offset, ra
                 p1 = kp_train[two_sides_matches[i].queryIdx].pt
                 p2 = kp_query[two_sides_matches[i].trainIdx].pt
                 pp = gdal.ApplyGeoTransform(geo_t,p1[0],p1[1])
-                logging.debug(f"GCP geot = (%f,%f) -> (%f,%f)", p2[0], p2[1], pp[0], pp[1])
+                logging.debug(f"GCP geot = (%f,%f) -> (%f,%f)", p1[0], p1[1], pp[0], pp[1])
+                logging.debug(f"Matched with (%f,%f)", p2[0], p2[1])
                 z = 0
-                gcp = gdal.GCP(pp[0], pp[1], z, p2[0], p2[1])
+                #info = "GCP from pixel %f, %f" % (p1[0], p1[1])
+                gcp = gdal.GCP(pp[0], pp[1], z, p2[0], p2[1])#, info, i)
                 #print ("GCP     = (" + str(p2[0]) +","+ str(p2[1]) + ") -> (" + str(pp[0]) +","+ str(pp[1]) + ")")
                 # gcp_string += ' -gcp '+" ".join([str(p2[0]),str(p2[1]),str(pp[0]), str(pp[1])])
                 gcp_list.append(gcp)
@@ -205,8 +198,9 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputFile, tile, offset, ra
         dst_ds = gdal.Translate('', src_ds, outputSRS = ds.GetProjection(), GCPs = gcp_list, format='MEM')        
         dst_ds = gdal.Warp(outputFile, dst_ds, tps = False, polynomialOrder = 1, dstNodata = 1)
 
-        if gcpOutputFile is not None:
-            saveGCPs(dst_gcp_list, osr.SpatialReference(ds.GetProjection()), gcpOutputFile)
+        if gcpOutputShp is not None:
+            saveGCPsAsShapefile(dst_gcp_list, osr.SpatialReference(ds.GetProjection()), gcpOutputShp)
+            saveGCPsAsText(dst_gcp_list, gcpOutputTxt)
         
         dst_ds = None
 
