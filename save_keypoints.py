@@ -3,15 +3,6 @@ import logging
 from common import getImageKeyPointsAndDescriptors, init_feature
 import pickle
 
-class My_KeyPoint:
-    def __init__(self, point):
-        self.pt = point.pt
-        self.size = point.size
-        self.angle = point.angle
-        self.response = point.response
-        self.octave = point.octave
-        self.class_id = point.class_id
-
 # Configure the global logger
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
@@ -32,13 +23,15 @@ def saveKeyPoints(inputFile, outputFile, feature_name, nFeatures, tile, offset, 
     logging.debug('Number of Features is %d', nFeatures)
     logging.debug('tile %d, %d', tile[0], tile[1])
     logging.debug('offset %d, %d', offset[0], offset[1])
-    detector, matcher = init_feature(feature_name)
+    detector, norm = init_feature(feature_name)
     img, kp, des = getImageKeyPointsAndDescriptors(inputFile, detector, tile, offset, convertToBinary, nFeatures)
     out_s = open(outputFile, 'wb')
     index = []
     for point in kp:
         temp = (point.pt[0], point.pt[1], point.size, point.angle, point.response, point.octave, point.class_id)
         index.append(temp)
+    pickle.dump(inputFile, out_s)
+    pickle.dump(feature_name, out_s)
     pickle.dump(index, out_s)
     pickle.dump(des, out_s)
     out_s.close()

@@ -10,27 +10,29 @@ import datetime
 FLANN_INDEX_KDTREE = 1  # bug: flann enums are missing
 FLANN_INDEX_LSH    = 6
 
-def init_feature(name, checks = 100):
-    chunks = name.split('-')
-    if chunks[0] == 'sift':
+def init_feature(name):
+    if name == 'sift':
         detector = cv.xfeatures2d.SIFT_create()
         norm = cv.NORM_L2
-    elif chunks[0] == 'surf':
+    elif name == 'surf':
         detector = cv.xfeatures2d.SURF_create(800)
         norm = cv.NORM_L2
-    elif chunks[0] == 'orb':
+    elif name == 'orb':
         detector = cv.ORB_create(400)
         norm = cv.NORM_HAMMING
-    elif chunks[0] == 'akaze':
+    elif name == 'akaze':
         detector = cv.AKAZE_create()
         norm = cv.NORM_HAMMING
-    elif chunks[0] == 'brisk':
+    elif name == 'brisk':
         detector = cv.BRISK_create()
         norm = cv.NORM_HAMMING
     else:
         return None, None
+    return detector, norm
+
+def init_matcher(flann, norm, checks = 100):
     search_params = {'checks': checks}   # or pass empty dictionary
-    if 'flann' in chunks:
+    if flann:
         if norm == cv.NORM_L2:
             flann_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
         else:
@@ -41,7 +43,7 @@ def init_feature(name, checks = 100):
         matcher = cv.FlannBasedMatcher(flann_params, search_params)  # bug : need to pass empty dict (#1329)
     else:
         matcher = cv.BFMatcher(norm)
-    return detector, matcher
+    return matcher
 
 def getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures=0):
     """Detect keypoints and compute descriptors. Later, we might something else than SIFT."""
@@ -50,7 +52,7 @@ def getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures=0):
         nbTilesY = int(math.ceil(img_shape[0]/(offset[1] * 1.0)))
         nbTilesX = int(math.ceil(img_shape[1]/(offset[0] * 1.0)))
         array = []
-        point_set = set()
+        point_set = set() # only used to have a fast 'contains' test before adding keypoints in order to avoid duplicates
         for i in range(nbTilesY):
             logging.debug("%s : %d/%d", datetime.datetime.now(), i ,nbTilesY)
             for j in range(nbTilesX):
@@ -92,7 +94,7 @@ def getMatches(matcher, des1, des2, ratio):
     #
     #    logging.info("FlannBasedMatcher start")
     #    flann = cv.FlannBasedMatcher(index_params, search_params)
-    logging.info("FlannBasedMatcher Knn Match")
+    logging.info("%s : FlannBasedMatcher Knn Match", datetime.datetime.now())
     #matches = matcher.knnMatch(np.asarray(des1,np.float32), np.asarray(des2,np.float32), k=2)
     #matches = matcher.knnMatch(queryDescriptors = cv.UMat(des1), trainDescriptors = cv.UMat(des2), k = 2)
     matches = matcher.knnMatch(queryDescriptors = np.asarray(des1), trainDescriptors = np.asarray(des2), k = 2)
@@ -138,21 +140,27 @@ def getImageKeyPointsAndDescriptors(imageFile, detector, tile, offset, convertTo
     kp, des = getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures)
     logging.info(f'{len(des)} keypoints in the image')
     return img, kp, des
-    
-def georef(inputFile, referenceFile, outputFile, feature_name, gcpOutputShp, gcpOutputTxt, tile, offset, ratio = 0.75, convertToBinary = False):
-    """Georeference the input using the training image and save the result in outputFile. 
-    A ratio can be given to select more or less matches (defaults to 0.75)."""
-    detector, matcher = init_feature(feature_name)
-    train, kp_train, des_train = getImageKeyPointsAndDescriptors(referenceFile, detector, tile, offset, convertToBinary)
-    query, kp_query, des_query = getImageKeyPointsAndDescriptors(inputFile, detector, tile, offset, convertToBinary)
+
+def match(norm, flann, des_train, des_query, ratio):
     # Match both ways
+    matcher = init_matcher(flann, norm)
+    if ratio is None:
+        ratio = 0.75
     matches_train = getMatches(matcher, des_train, des_query, ratio)
     matches_query = getMatches(matcher, des_query, des_train, ratio)
-
     # Only keep matches that are present in both ways
     two_sides_matches = [m for m in matches_train if any(mm.queryIdx == m.trainIdx and mm.trainIdx == m.queryIdx for mm in matches_query)]
-
     logging.debug("%s : Matches %d", datetime.datetime.now(), len(two_sides_matches))
+    return two_sides_matches
+    
+def georef(inputFile, referenceFile, outputFile, feature_name, flann, gcpOutputShp, gcpOutputTxt, tile, offset, ratio = 0.75, convertToBinary = False):
+    """Georeference the input using the training image and save the result in outputFile. 
+    A ratio can be given to select more or less matches (defaults to 0.75)."""
+    detector, norm = init_feature(feature_name)
+    train, kp_train, des_train = getImageKeyPointsAndDescriptors(referenceFile, detector, tile, offset, convertToBinary)
+    query, kp_query, des_query = getImageKeyPointsAndDescriptors(inputFile, detector, tile, offset, convertToBinary)
+    two_sides_matches = match(norm, des_train, des_query, ratio)
+
     MIN_MATCH_COUNT = 3
 
     if len(two_sides_matches) > MIN_MATCH_COUNT:
