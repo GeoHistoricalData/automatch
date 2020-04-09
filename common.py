@@ -1,62 +1,101 @@
-import cv2
+import cv2 as cv
 import numpy as np
 import math
 from osgeo import gdal
 from osgeo import osr
 from osgeo import ogr
 import logging
+import datetime
 
+FLANN_INDEX_KDTREE = 1  # bug: flann enums are missing
+FLANN_INDEX_LSH    = 6
 
-def getKeyPointsAndDescriptors(img, tile, offset, nFeatures=0):
+def init_feature(name, checks = 100):
+    chunks = name.split('-')
+    if chunks[0] == 'sift':
+        detector = cv.xfeatures2d.SIFT_create()
+        norm = cv.NORM_L2
+    elif chunks[0] == 'surf':
+        detector = cv.xfeatures2d.SURF_create(800)
+        norm = cv.NORM_L2
+    elif chunks[0] == 'orb':
+        detector = cv.ORB_create(400)
+        norm = cv.NORM_HAMMING
+    elif chunks[0] == 'akaze':
+        detector = cv.AKAZE_create()
+        norm = cv.NORM_HAMMING
+    elif chunks[0] == 'brisk':
+        detector = cv.BRISK_create()
+        norm = cv.NORM_HAMMING
+    else:
+        return None, None
+    search_params = {'checks': checks}   # or pass empty dictionary
+    if 'flann' in chunks:
+        if norm == cv.NORM_L2:
+            flann_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+        else:
+            flann_params= dict(algorithm = FLANN_INDEX_LSH,
+                               table_number = 6, # 12
+                               key_size = 12,     # 20
+                               multi_probe_level = 1) #2
+        matcher = cv.FlannBasedMatcher(flann_params, search_params)  # bug : need to pass empty dict (#1329)
+    else:
+        matcher = cv.BFMatcher(norm)
+    return detector, matcher
+
+def getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures=0):
     """Detect keypoints and compute descriptors. Later, we might something else than SIFT."""
     if tile and offset:
         img_shape = img.shape
         nbTilesY = int(math.ceil(img_shape[0]/(offset[1] * 1.0)))
         nbTilesX = int(math.ceil(img_shape[1]/(offset[0] * 1.0)))
         array = []
+        point_set = set()
         for i in range(nbTilesY):
-            logging.debug("%d/%d", i ,nbTilesY)
+            logging.debug("%s : %d/%d", datetime.datetime.now(), i ,nbTilesY)
             for j in range(nbTilesX):
                 xmin = offset[0]*j
                 ymin = offset[1]*i
                 cropped_img = img[ymin:min(offset[1]*i+tile[1], img_shape[0]), xmin:min(offset[0]*j+tile[0], img_shape[1])]
-                sift = cv2.xfeatures2d.SIFT_create()
-                kp, des = sift.detectAndCompute(cropped_img,None)
+                kp, des = detector.detectAndCompute(cropped_img,None)
                 if len(kp) > 0:
                     for z in zip(kp, des):
                         pt = z[0].pt
                         z[0].pt = (pt[0]+xmin,pt[1]+ymin)
-                        array.append(z)
-        logging.debug("Found %d points", len(array))
+                        if z[0].pt not in point_set:
+                            point_set.add(z[0].pt)
+                            array.append(z)
+                        #array.append(z)
+        logging.debug("%s : Found %d points", datetime.datetime.now(), len(array))
         array.sort(key=lambda t: t[0].response, reverse=True)
         sortedarray = array
         if nFeatures>0:
             sortedarray = array[:nFeatures]
-        if len(array) > 0:
-            logging.debug(sortedarray[0][0])
-            logging.debug(sortedarray[0][0].pt)
-            logging.debug(sortedarray[0][1])
         return [ e[0] for e in sortedarray ], [ e[1] for e in sortedarray ]
     else:
-        # Initiate SIFT detector
-        sift = cv2.xfeatures2d.SIFT_create(nFeatures)
-        # find the keypoints and descriptors with SIFT
-        logging.debug("detect keypoints on image")
-        return sift.detectAndCompute(img,None)
+        logging.debug("%s : detect keypoints on image", datetime.datetime.now())
+        array = detector.detectAndCompute(img,None)
+        logging.debug("%s : Found %d points", datetime.datetime.now(), len(array))
+        array.sort(key=lambda t: t[0].response, reverse=True)
+        sortedarray = array
+        if nFeatures>0:
+            sortedarray = array[:nFeatures]
+        return [ e[0] for e in sortedarray ], [ e[1] for e in sortedarray ]
 
 
-def getMatches(des1, des2, ratio):
+def getMatches(matcher, des1, des2, ratio):
     # FLANN parameters
-    FLANN_INDEX_KDTREE = 0
-    index_params = {'algorithm': FLANN_INDEX_KDTREE,
-                    'trees': 5}
-    search_params = {'checks': 100}   # or pass empty dictionary
-
-    logging.info("FlannBasedMatcher start")
-    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    #    FLANN_INDEX_KDTREE = 0
+    #    index_params = {'algorithm': FLANN_INDEX_KDTREE,
+    #                    'trees': 5}
+    #    search_params = {'checks': 100}   # or pass empty dictionary
+    #
+    #    logging.info("FlannBasedMatcher start")
+    #    flann = cv.FlannBasedMatcher(index_params, search_params)
     logging.info("FlannBasedMatcher Knn Match")
-    matches = flann.knnMatch(np.asarray(des1,np.float32), np.asarray(des2,np.float32), k=2)
-
+    #matches = matcher.knnMatch(np.asarray(des1,np.float32), np.asarray(des2,np.float32), k=2)
+    #matches = matcher.knnMatch(queryDescriptors = cv.UMat(des1), trainDescriptors = cv.UMat(des2), k = 2)
+    matches = matcher.knnMatch(queryDescriptors = np.asarray(des1), trainDescriptors = np.asarray(des2), k = 2)
     # Apply ratio test
     good_matches = [m for m,n in matches if m.distance < ratio * n.distance]
     return good_matches
@@ -64,8 +103,8 @@ def getMatches(des1, des2, ratio):
 
 def getBinImage(image):
     # Otsu's thresholding with a gaussian blur
-    blur = cv2.GaussianBlur(image,(5,5),0)
-    th, img = cv2.threshold(blur,0,255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    blur = cv.GaussianBlur(image,(5,5),0)
+    th, img = cv.threshold(blur,0,255,cv.THRESH_BINARY + cv.THRESH_OTSU)
     return img
 
 
@@ -91,50 +130,46 @@ def saveGCPsAsText(gcps, outputFile):
     for i in range(len(gcps)):
         file.write("%f,%f,%f,%f,1,0,0,0\n" % (gcps[i].GCPX, gcps[i].GCPY, gcps[i].GCPPixel, -gcps[i].GCPLine))
     file.close()
+
+def getImageKeyPointsAndDescriptors(imageFile, detector, tile, offset, convertToBinary, nFeatures = 100000):
+    img = cv.imread(imageFile, cv.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
+    if convertToBinary:
+        img = getBinImage(img)
+    kp, des = getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures)
+    logging.info(f'{len(des)} keypoints in the image')
+    return img, kp, des
     
-def georef(inputFile, referenceFile, outputFile, gcpOutputShp, gcpOutputTxt, tile, offset, ratio = 0.75, convertToBinary = False):
+def georef(inputFile, referenceFile, outputFile, feature_name, gcpOutputShp, gcpOutputTxt, tile, offset, ratio = 0.75, convertToBinary = False):
     """Georeference the input using the training image and save the result in outputFile. 
     A ratio can be given to select more or less matches (defaults to 0.75)."""
-    train = cv2.imread(referenceFile, cv2.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
-    logging.info(train)
-    query = cv2.imread(inputFile, cv2.IMREAD_GRAYSCALE) # trainImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
-    logging.info(query)
-
-    if convertToBinary:
-        train = getBinImage(train)
-        query = getBinImage(query)
-
-    kp_train, des_train = getKeyPointsAndDescriptors(train, tile, offset, 100000)
-    logging.info(f'{len(des_train)} keypoints in the training image')
-
-    kp_query, des_query = getKeyPointsAndDescriptors(query, tile, offset, 100000)
-    logging.info(f'{len(des_query)} keypoints in the query image')
-
+    detector, matcher = init_feature(feature_name)
+    train, kp_train, des_train = getImageKeyPointsAndDescriptors(referenceFile, detector, tile, offset, convertToBinary)
+    query, kp_query, des_query = getImageKeyPointsAndDescriptors(inputFile, detector, tile, offset, convertToBinary)
     # Match both ways
-    matches_train = getMatches(des_train, des_query, ratio)
-    matches_query = getMatches(des_query, des_train, ratio)
+    matches_train = getMatches(matcher, des_train, des_query, ratio)
+    matches_query = getMatches(matcher, des_query, des_train, ratio)
 
     # Only keep matches that are present in both ways
     two_sides_matches = [m for m in matches_train if any(mm.queryIdx == m.trainIdx and mm.trainIdx == m.queryIdx for mm in matches_query)]
 
-    logging.debug("Matches %d",len(two_sides_matches))
+    logging.debug("%s : Matches %d", datetime.datetime.now(), len(two_sides_matches))
     MIN_MATCH_COUNT = 3
 
     if len(two_sides_matches) > MIN_MATCH_COUNT:
         src_pts = np.float32([kp_train[m.queryIdx].pt for m in two_sides_matches]).reshape(-1,1,2)
         dst_pts = np.float32([kp_query[m.trainIdx].pt for m in two_sides_matches]).reshape(-1,1,2)
 
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC)
+        M, mask = cv.findHomography(src_pts, dst_pts, cv.RANSAC)
         matchesMask = mask.ravel().tolist()
 
         ds = gdal.Open(referenceFile) 
         xoffset, px_w, rot1, yoffset, px_h, rot2 = ds.GetGeoTransform()
-        logging.debug("Transform: %f, %f, %f, %f, %f, %f", xoffset, px_w, rot1, yoffset, px_h, rot2)
+        logging.debug("%s : Transform: %f, %f, %f, %f, %f, %f", datetime.datetime.now(), xoffset, px_w, rot1, yoffset, px_h, rot2)
 
         gcp_list = []
         geo_t = ds.GetGeoTransform ()
         # gcp_string = ''
-        logging.debug("%d matches", len(matchesMask))
+        logging.debug("%s : %d matches", datetime.datetime.now(), len(matchesMask))
         for i, goodmatch in enumerate(matchesMask):
             if goodmatch == 1:
                 p1 = kp_train[two_sides_matches[i].queryIdx].pt
@@ -148,7 +183,7 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputShp, gcpOutputTxt, til
                 #print ("GCP     = (" + str(p2[0]) +","+ str(p2[1]) + ") -> (" + str(pp[0]) +","+ str(pp[1]) + ")")
                 # gcp_string += ' -gcp '+" ".join([str(p2[0]),str(p2[1]),str(pp[0]), str(pp[1])])
                 gcp_list.append(gcp)
-        logging.debug("%d GCPs", len(gcp_list))
+        logging.debug("%s : %d GCPs", datetime.datetime.now(), len(gcp_list))
 
         translate_t = gdal.GCPsToGeoTransform(gcp_list)
         translate_inv_t = gdal.InvGeoTransform(translate_t)
@@ -187,11 +222,11 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputShp, gcpOutputTxt, til
         logging.debug(f"map residuals %s", mapResiduals)
         logging.debug(f"geo residuals %s", geoResiduals)
         # print (gcp_string)
-        h,w = train.shape
-        pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
-        dst = cv2.perspectiveTransform(pts,M)
+        # h,w = train.shape
+        # pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
+        # dst = cv.perspectiveTransform(pts,M)
 
-        img2 = cv2.polylines(query,[np.int32(dst)],True,255,3, cv2.LINE_AA)
+        # img2 = cv.polylines(query,[np.int32(dst)],True,255,3, cv.LINE_AA)
 
         src_ds = gdal.Open(inputFile)
         # translate and warp the inputFile using GCPs and polynomial of order 1
@@ -209,7 +244,7 @@ def georef(inputFile, referenceFile, outputFile, gcpOutputShp, gcpOutputTxt, til
                            matchesMask = matchesMask, # draw only inliers
                            flags = 2)
 
-        img3 = cv2.drawMatches(train,kp_train,query,kp_query,two_sides_matches,None,**draw_params)
+        img3 = cv.drawMatches(train,kp_train,query,kp_query,two_sides_matches,None,**draw_params)
         return img3;
 
     else:
