@@ -6,6 +6,7 @@ from osgeo import osr
 from osgeo import ogr
 import logging
 import datetime
+import pickle
 
 FLANN_INDEX_KDTREE = 1  # bug: flann enums are missing
 FLANN_INDEX_LSH    = 6
@@ -133,7 +134,7 @@ def saveGCPsAsText(gcps, outputFile):
         file.write("%f,%f,%f,%f,1,0,0,0\n" % (gcps[i].GCPX, gcps[i].GCPY, gcps[i].GCPPixel, -gcps[i].GCPLine))
     file.close()
 
-def getImageKeyPointsAndDescriptors(imageFile, detector, tile, offset, convertToBinary, nFeatures = 100000):
+def getImageKeyPointsAndDescriptors(imageFile, detector, tile, offset, convertToBinary = False, nFeatures = 100000):
     img = cv.imread(imageFile, cv.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
     if convertToBinary:
         img = getBinImage(img)
@@ -257,3 +258,114 @@ def georef(inputFile, referenceFile, outputFile, feature_name, flann, gcpOutputS
 
     else:
         logging.error("Not enough matches are found - %d/%d", len(two_sides_matches), MIN_MATCH_COUNT)
+
+def loadKeyPoints(keypoints_file, nFeatures = 0):
+    f = open(keypoints_file,'rb')
+    inputFile = pickle.load(f)
+    feature_name = pickle.load(f)
+    logging.debug("%s : Loading keypoints extracted from %s using %s", datetime.datetime.now(), inputFile, feature_name)
+    keypoints = pickle.load(f)
+    logging.debug("%s : Found %d keypoints", datetime.datetime.now(), len(keypoints))
+    descriptors = pickle.load(f)
+    logging.debug("%s : Found %d descriptors", datetime.datetime.now(), len(descriptors))
+    kp = []
+    for point in keypoints:
+        temp = cv.KeyPoint(x=point[0],y=point[1],_size=point[2], _angle=point[3], _response=point[4], _octave=point[5], _class_id=point[6]) 
+        kp.append(temp)
+    sortedarray = sorted(zip(kp, descriptors), key=lambda t: t[0].response, reverse=True)
+    #array.sort(key=lambda t: t[0].response, reverse=True)
+    if nFeatures>0:
+        sortedarray = sortedarray[:nFeatures]
+    return inputFile, feature_name, [ e[0] for e in sortedarray ], [ e[1] for e in sortedarray ]
+
+def loadOrCompute(ki, inputFile, feature_name, tile, offset):
+    if ki is None:
+        if feature_name is None:
+            feature_name = 'brisk'
+        detector, norm = init_feature(feature_name)
+        img, kp, des = getImageKeyPointsAndDescriptors(inputFile, detector, tile, offset)
+        return img, feature_name, kp, des
+    else:
+        return loadKeyPoints(ki)
+
+def getGCP(referenceFile, kp_query, kp_train, two_sides_matches, min_matches = 3):
+    if len(two_sides_matches) > min_matches:
+        src_pts = np.float32([kp_train[m.queryIdx].pt for m in two_sides_matches]).reshape(-1,1,2)
+        dst_pts = np.float32([kp_query[m.trainIdx].pt for m in two_sides_matches]).reshape(-1,1,2)
+
+        M, mask = cv.findHomography(src_pts, dst_pts, cv.RANSAC)
+        matchesMask = mask.ravel().tolist()
+
+        ds = gdal.Open(referenceFile) 
+        xoffset, px_w, rot1, yoffset, px_h, rot2 = ds.GetGeoTransform()
+        logging.debug("%s : Transform: %f, %f, %f, %f, %f, %f", datetime.datetime.now(), xoffset, px_w, rot1, yoffset, px_h, rot2)
+
+        gcp_list = []
+        geo_t = ds.GetGeoTransform ()
+        # gcp_string = ''
+        logging.debug("%s : %d matches", datetime.datetime.now(), len(matchesMask))
+        for i, goodmatch in enumerate(matchesMask):
+            if goodmatch == 1:
+                p1 = kp_train[two_sides_matches[i].queryIdx].pt
+                p2 = kp_query[two_sides_matches[i].trainIdx].pt
+                pp = gdal.ApplyGeoTransform(geo_t,p1[0],p1[1])
+                logging.debug(f"GCP geot = (%f,%f) -> (%f,%f)", p1[0], p1[1], pp[0], pp[1])
+                logging.debug(f"Matched with (%f,%f)", p2[0], p2[1])
+                z = 0
+                #info = "GCP from pixel %f, %f" % (p1[0], p1[1])
+                gcp = gdal.GCP(pp[0], pp[1], z, p2[0], p2[1])#, info, i)
+                #print ("GCP     = (" + str(p2[0]) +","+ str(p2[1]) + ") -> (" + str(pp[0]) +","+ str(pp[1]) + ")")
+                # gcp_string += ' -gcp '+" ".join([str(p2[0]),str(p2[1]),str(pp[0]), str(pp[1])])
+                gcp_list.append(gcp)
+        logging.debug("%s : %d GCPs", datetime.datetime.now(), len(gcp_list))
+
+        translate_t = gdal.GCPsToGeoTransform(gcp_list)
+        translate_inv_t = gdal.InvGeoTransform(translate_t)
+        logging.debug(len(translate_t))
+        logging.debug("geotransform = %s", translate_t)
+        logging.debug(len(translate_inv_t))
+        logging.debug("invgeotransform = %s", translate_inv_t)
+        #trans_gcp_list = []
+        dst_gcp_list = []
+        mapResiduals = 0.0
+        geoResiduals = 0.0
+        for gcp in gcp_list:
+            # Inverse geotransform to get the corresponding pixel
+            pix = gdal.ApplyGeoTransform(translate_inv_t,gcp.GCPX,gcp.GCPY)
+            logging.debug("GCP = (%d,%d) -> (%d,%d)", gcp.GCPPixel, gcp.GCPLine, gcp.GCPX, gcp.GCPY)
+            logging.debug(" => (%d,%d)", pix[0], pix[1])
+            map_dX = gcp.GCPPixel - pix[0]
+            map_dY = gcp.GCPLine - pix[1]
+            map_residual = map_dX * map_dX + map_dY * map_dY
+            mapResiduals = mapResiduals + map_residual
+            # Apply the transform to get the GCP location in the output SRS
+            pp = gdal.ApplyGeoTransform(translate_t,gcp.GCPPixel,gcp.GCPLine)
+            z = 0
+            out_gcp = gdal.GCP(pp[0], pp[1], z, gcp.GCPPixel, gcp.GCPLine)
+            logging.debug("GCP = (%d,%d) -> (%d,%d)", out_gcp.GCPPixel, out_gcp.GCPLine, pp[0], pp[1])
+            dX = gcp.GCPX - pp[0]
+            dY = gcp.GCPY - pp[1]
+            residual = dX * dX + dY * dY
+            geoResiduals = geoResiduals + residual
+            logging.debug("map residual = %f, %f = %f", map_dX, map_dY, map_residual)
+            logging.debug("residual = %f, %f = %f", dX, dY, residual)
+            dst_gcp_list.append(out_gcp)
+
+        logging.debug(f"map residuals %s", mapResiduals)
+        logging.debug(f"geo residuals %s", geoResiduals)
+        return ds.GetProjection(), gcp_list, dst_gcp_list
+    else:
+        logging.error("Not enough matches are found - %d/%d", len(two_sides_matches), min_matches)
+        return None, None, None
+
+def saveGeoref(inputFile, outputFile, projection, gcp_list, dst_gcp_list, pointsShp, pointsTxt):
+    src_ds = gdal.Open(inputFile)
+    # translate and warp the inputFile using GCPs and polynomial of order 1
+    dst_ds = gdal.Translate('', src_ds, outputSRS = projection, GCPs = gcp_list, format='MEM')        
+    dst_ds = gdal.Warp(outputFile, dst_ds, tps = False, polynomialOrder = 1, dstNodata = 1)
+    # save the points to file
+    if pointsShp is not None:
+        saveGCPsAsShapefile(dst_gcp_list, osr.SpatialReference(projection), pointsShp)
+    if pointsTxt is not None:
+        saveGCPsAsText(dst_gcp_list, pointsTxt)
+    dst_ds = None
