@@ -24,11 +24,24 @@ python3 automatch.py -i your_awesome_image.jpg -r an_already_georeferenced_map.t
 Alternatively, you can save the keypoints and desctiptors as a custom file (sort of project file).
 All the arguments used for the point detection will be saved.
 
-### example
+### Usage
 ```shell
+Usage: save_keypoints.py [OPTIONS] INPUTFILE OUTPUTFILE
 
-python3 save_keypoints.py -i your_awesome_image.jpg -o your_output_project_file -tileX 512 -tileY 512 -offsetX 512 -offsetY 512 --feature orb
+  Compute the keypoints and desctiptors of an image and save them in a store
+  file. All the arguments used for the point detection will be saved.
 
+Options:
+  -f, --feature TEXT             <sift|surf|orb|akaze|brisk>[-flann]
+  -n, --n_features INTEGER       Number of features
+  --tile <INTEGER INTEGER>...    Tile dimensions (width, height).
+  --offset <INTEGER INTEGER>...  Offset as a pair (offsetX, offsetY)
+  --help                         Show this message and exit.
+
+```
+### Example
+```shell
+python save_keypoints.py  some_image.jpg  store.pickle --tile 512 512 --offset 512 512 --feature orb
 ```
 
 ## Visualisation of keypoints and descriptors
