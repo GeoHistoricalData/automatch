@@ -260,23 +260,29 @@ def georef(inputFile, referenceFile, outputFile, feature_name, flann, gcpOutputS
         logging.error("Not enough matches are found - %d/%d", len(two_sides_matches), MIN_MATCH_COUNT)
 
 def loadKeyPoints(keypoints_file, nFeatures = 0):
-    f = open(keypoints_file,'rb')
-    inputFile = pickle.load(f)
-    feature_name = pickle.load(f)
-    logging.debug("%s : Loading keypoints extracted from %s using %s", datetime.datetime.now(), inputFile, feature_name)
-    keypoints = pickle.load(f)
-    logging.debug("%s : Found %d keypoints", datetime.datetime.now(), len(keypoints))
-    descriptors = pickle.load(f)
-    logging.debug("%s : Found %d descriptors", datetime.datetime.now(), len(descriptors))
-    kp = []
-    for point in keypoints:
-        temp = cv.KeyPoint(x=point[0],y=point[1],_size=point[2], _angle=point[3], _response=point[4], _octave=point[5], _class_id=point[6]) 
-        kp.append(temp)
-    sortedarray = sorted(zip(kp, descriptors), key=lambda t: t[0].response, reverse=True)
-    #array.sort(key=lambda t: t[0].response, reverse=True)
-    if nFeatures>0:
-        sortedarray = sortedarray[:nFeatures]
-    return inputFile, feature_name, [ e[0] for e in sortedarray ], [ e[1] for e in sortedarray ]
+    with open(keypoints_file,'rb') as kpf:
+        data = pickle.load(kpf)
+        inputfile = data['inputfile']
+        feature_name = data['feature_name']
+        logging.debug("%s : Loading keypoints extracted from %s using %s", datetime.datetime.now(), inputfile,
+                      feature_name)
+        keypoints = data['keypoints']
+        logging.debug("%s : Found %d keypoints", datetime.datetime.now(), len(keypoints))
+        descriptors = data['descriptors']
+        logging.debug("%s : Found %d descriptors", datetime.datetime.now(), len(descriptors))
+
+        def make_cv_keypoint(kp):
+            cvkp = cv.KeyPoint(x=kp[0], y=kp[1], _size=kp[2], _angle=kp[3], _response=kp[4], _octave=kp[5],
+                        _class_id=kp[6])
+            return cvkp
+
+        cvkp = [make_cv_keypoint(kp) for kp in keypoints]
+        sortedarray = sorted(zip(cvkp, descriptors), key=lambda t: t[0].response, reverse=True)
+
+        if nFeatures:
+            sortedarray = sortedarray[:nFeatures]
+
+        return inputfile, feature_name, [e[0] for e in sortedarray], [e[1] for e in sortedarray]
 
 def loadOrCompute(ki, inputFile, feature_name, tile, offset):
     if ki is None:

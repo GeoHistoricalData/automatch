@@ -29,10 +29,10 @@ def save_keypoints(inputfile, outputfile, feature_name, n_features, tile, offset
     _, kp, des = getImageKeyPointsAndDescriptors(inputfile.name, detector, tile, offset, to_binary, n_features)
 
     def get_point_data(p):
-        (p.pt[0], p.pt[1], p.size, p.angle, p.response, p.octave, p.class_id)
+        return (p.pt[0], p.pt[1], p.size, p.angle, p.response, p.octave, p.class_id)
 
     index = [get_point_data(point) for point in kp]
-    dump_me = [inputfile.name, feature_name, index, des]
+    dump_me = {'inputfile': inputfile.name, 'feature_name': feature_name, 'keypoints': index, 'descriptors': des}
     pickle.dump(dump_me, outputfile)
 
 
