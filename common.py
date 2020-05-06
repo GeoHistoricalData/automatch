@@ -138,9 +138,6 @@ def getImageKeyPointsAndDescriptors(imageFile, detector, tile, offset, convertTo
     img = cv.imread(imageFile, cv.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
     if convertToBinary:
         img = getBinImage(img)
-    blur = cv.bilateralFilter(img,9,50,50)
-    img= cv.Canny(img, 100, 200)
-    cv.imwrite('toto.jpg', img)
     kp, des = getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures)
     logging.info(f'{len(des)} keypoints in the image')
     return img, kp, des
