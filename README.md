@@ -14,10 +14,8 @@ A python tool for automatic image georeferencing.
 -offsetY Y dimension for the offset between tiles (optional)
 
 ### example
-```shell
-
+```shell script
 python3 automatch.py -i your_awesome_image.jpg -r an_already_georeferenced_map.tif -o your_new_awesome_georeferenced_image.tif --gcps -tileX 512 -tileY 512 -offsetX 512 -offsetY 512
-
 ```
 
 ## Precomputation of keypoints and descriptors
@@ -25,7 +23,7 @@ Alternatively, you can save the keypoints and desctiptors as a custom file (sort
 All the arguments used for the point detection will be saved.
 
 ### Usage
-```shell
+```shell script
 Usage: save_keypoints.py [OPTIONS] INPUTFILE OUTPUTFILE
 
   Compute the keypoints and desctiptors of an image and save them in a store
@@ -37,21 +35,28 @@ Options:
   --tile <INTEGER INTEGER>...    Tile dimensions (width, height).
   --offset <INTEGER INTEGER>...  Offset as a pair (offsetX, offsetY)
   --help                         Show this message and exit.
-
 ```
 ### Example
-```shell
+```shell script
 python save_keypoints.py  some_image.jpg  store.pickle --tile 512 512 --offset 512 512 --feature orb
 ```
 
 ## Visualisation of keypoints and descriptors
 Now that they have been saved, you can visualise your keypoints store in the custom file (sort of project file).
 
-### example
-```shell
+### Usage
+```shell script
+Usage: load_keypoints.py [OPTIONS] KEYPOINTS
 
-python3 load_keypoints.py your_output_project_file
+  Parse the load keypoints arguments
 
+Options:
+  -n, --n-keypoints INTEGER  Number of keypoints to load
+  --help                     Show this message and exit.
+```
+### Example
+```shell script
+python3 load_keypoints.py store.pickle
 ```
 
 ## Run automatch with the stored keypoints and descriptors

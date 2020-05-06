@@ -1,22 +1,19 @@
-import argparse
-import logging
 from matplotlib import pyplot as plt
 import cv2 as cv
+import click
 from common import loadKeyPoints
 
-# Configure the global logger
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
-parser = argparse.ArgumentParser(prog='load_keypoints.py',description='Parse the load keypoints arguments.')
-parser.add_argument('keypoints', type=str, help='keypoints')
-parser.add_argument('-n', type=int, help='number of keypoints to load')
+@click.command()
+@click.argument('keypoints', type=click.File('rb', lazy=True))
+@click.option('--n-keypoints', '-n', default=0, help='Number of keypoints to load')
+def load(keypoints, n_keypoints):
+    """Parse the load keypoints arguments"""
+    inputfile, _, kp, _ = loadKeyPoints(keypoints.name, n_keypoints)
+    img = cv.imread(inputfile)
+    im_kp = cv.drawKeypoints(img, kp, img)
+    plt.imshow(cv.cvtColor(im_kp, cv.COLOR_BGR2RGB)), plt.show()
+
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    nFeatures = 0
-    if args.n:
-        nFeatures = args.n
-    inputFile, _, kp, _ = loadKeyPoints(args.keypoints, nFeatures)
-    img = cv.imread(inputFile)
-    imm = cv.drawKeypoints(img, kp, img)
-    plt.imshow(cv.cvtColor(imm, cv.COLOR_BGR2RGB)),plt.show()
+    load()

@@ -138,6 +138,9 @@ def getImageKeyPointsAndDescriptors(imageFile, detector, tile, offset, convertTo
     img = cv.imread(imageFile, cv.IMREAD_GRAYSCALE) # queryImage (IMREAD_COLOR flag=cv.IMREAD_GRAYSCALE to force grayscale)
     if convertToBinary:
         img = getBinImage(img)
+    blur = cv.bilateralFilter(img,9,50,50)
+    img= cv.Canny(img, 100, 200)
+    cv.imwrite('toto.jpg', img)
     kp, des = getKeyPointsAndDescriptors(detector, img, tile, offset, nFeatures)
     logging.info(f'{len(des)} keypoints in the image')
     return img, kp, des
@@ -259,6 +262,7 @@ def georef(inputFile, referenceFile, outputFile, feature_name, flann, gcpOutputS
     else:
         logging.error("Not enough matches are found - %d/%d", len(two_sides_matches), MIN_MATCH_COUNT)
 
+
 def loadKeyPoints(keypoints_file, nFeatures = 0):
     with open(keypoints_file,'rb') as kpf:
         data = pickle.load(kpf)
@@ -277,12 +281,13 @@ def loadKeyPoints(keypoints_file, nFeatures = 0):
             return cvkp
 
         cvkp = [make_cv_keypoint(kp) for kp in keypoints]
+        # Sort the pairs of (keypoint, descriptor) based on keypoints responses, ascending
         sortedarray = sorted(zip(cvkp, descriptors), key=lambda t: t[0].response, reverse=True)
-
-        if nFeatures:
-            sortedarray = sortedarray[:nFeatures]
-
-        return inputfile, feature_name, [e[0] for e in sortedarray], [e[1] for e in sortedarray]
+        # Keep only nFeatures pairs is nFeatures is not 0
+        sortedarray = sortedarray[:nFeatures] if nFeatures else sortedarray
+        # Unzip so we get a list of sorted keypoints and a list of sorted descriptors
+        unzipped = list(zip(*sortedarray))
+        return inputfile, feature_name, unzipped[0], unzipped[1]
 
 def loadOrCompute(ki, inputFile, feature_name, tile, offset):
     if ki is None:
